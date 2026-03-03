@@ -2,6 +2,8 @@
 
 This library implements the **range-proof** scheme described in [this HackMD note](https://hackmd.io/@dabo/B1U4kx8XI), built in Rust on top of the [arkworks](https://arkworks.rs) ecosystem. 
 
+The library is generic over any pairing-friendly curve that implements
+`ark_ec::pairing::Pairing`.
 
 ---
 
@@ -18,17 +20,17 @@ constraints to prove well-formedness:
 | **w₃** | The recurrence `g(ωⁱ) = 2·g(ωⁱ⁺¹) + zᵢ` holds everywhere |
 
 All three constraints are combined into a single quotient polynomial `q(x)` and
-opened via the **KZG10** polynomial commitment scheme over the BLS12-381 pairing
-curve. The resulting `RangeProof` is a constant-size, pairing-based proof.
+opened via the **KZG10** polynomial commitment scheme over any supported pairing
+curve `E`. The resulting `RangeProof<E>` is a constant-size, pairing-based proof.
 
 ### High-level API
 
-```
-prove_min(pp, min, values_poly, values, num_bits) -> Result<Vec<RangeProof>>
-prove_max(pp, max, values_poly, values, num_bits) -> Result<Vec<RangeProof>>
+```rust
+prove_min<E: Pairing>(pp, min, values_poly, values, num_bits) -> Result<Vec<RangeProof<E>>>
+prove_max<E: Pairing>(pp, max, values_poly, values, num_bits) -> Result<Vec<RangeProof<E>>>
 
-min_verify(pp, min, values_com, proofs, num_bits) -> Result<bool>
-max_verify(pp, max, values_com, proofs, num_bits) -> Result<bool>
+min_verify<E: Pairing>(pp, min, values_com, proofs, num_bits) -> Result<bool>
+max_verify<E: Pairing>(pp, max, values_com, proofs, num_bits) -> Result<bool>
 ```
 
 Both the prover and verifier accept **batches** of values and run in parallel via
@@ -40,17 +42,15 @@ Both the prover and verifier accept **batches** of values and run in parallel vi
 
 ```
 src/
-├── lib.rs              # crate root – re-exports public modules
-├── range_proof.rs      # proof generation and verification
-├── utilities.rs        # polynomial helpers, binary encoding, Fiat-Shamir
-└── ark_serde.rs        # serde serialisation for arkworks types
-tests
-├── range_proof_test.rs # comprehensive range proof tests
-└── utilities_test.rs # utility function tests
+├── lib.rs                   # crate root – re-exports public modules
+├── range_proof.rs           # proof generation and verification (generic over E: Pairing)
+├── utilities.rs             # polynomial helpers, binary encoding, Fiat-Shamir
+└── ark_serde.rs             # serde serialisation for arkworks types
+tests/
+├── range_proof_test.rs      # comprehensive range proof tests (BLS12-381)
+├── utilities_test.rs        # utility function tests
+└── curves.rs                # cross-curve tests (BLS12-381 vs BN254)
 ```
-
----
-
 
 ---
 
@@ -87,6 +87,9 @@ cargo test -- --nocapture
 
 # Run a specific test
 cargo test test_max_verify_with_valid_values
+
+# Run only the cross-curve tests
+cargo test --test curves
 ```
 
 > **Note:** The large-`n` tests (`n = 128`, `n = 256`) involve KZG setups and
@@ -124,22 +127,26 @@ Current coverage snapshot:
 * The Fiat-Shamir heuristic is instantiated with SHA-256 over serialized
   compressed group elements, which is adequate for testing but should be
   reviewed for production use.
-  
 ---
 
 ## Dependencies (key)
 
 | Crate | Purpose |
 |---|---|
-| `ark-bls12-381` | BLS12-381 pairing curve |
-| `ark-poly-commit` | KZG10 polynomial commitment scheme |
-| `ark-poly` | Dense univariate polynomials and FFT domains |
+| `ark-ec` | Generic pairing-curve traits (`Pairing`, `CurveGroup`) |
 | `ark-ff` | Finite field arithmetic |
+| `ark-poly` | Dense univariate polynomials and FFT domains |
+| `ark-poly-commit` | KZG10 polynomial commitment scheme |
+| `ark-serialize` | Canonical serialisation of group elements (Fiat-Shamir, serde) |
+| `ark-std` | Arkworks RNG and utility abstractions |
+| `ark-bls12-381` | BLS12-381 pairing curve (primary curve) |
+| `ark-bn254` | BN254 pairing curve |
+| `num-traits` | Generic numeric traits |
+| `rand` | Random number generation |
 | `rayon` | Data-parallel proof / verify |
 | `sha2` | SHA-256 for Fiat-Shamir challenges |
 | `serde` / `serde_json` | Proof serialisation |
 | `anyhow` | Ergonomic error handling |
-| `criterion` | 	Benchmarking |
 
 ---
 

@@ -92,6 +92,7 @@ mod ark_serde_tests {
         // Validate::Yes.  Using the wrong length (33 bytes) is a second
         // layer of defence — either property alone is enough to force an error.
         #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
         struct Wrapper(#[serde(with = "crate::ark_serde")] Fr);
 
         // 33 × 0xFF: wrong length *and* every byte exceeds the field modulus.

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use ark_bls12_381::{Bls12_381, Fr, G1Affine, G1Projective};
+    use ark_ec::{AffineRepr, CurveGroup};
     use ark_ff::{Field, One, Zero};
     use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
     use ark_poly_commit::kzg10::{Powers, VerifierKey, KZG10};
@@ -11,33 +12,39 @@ mod tests {
     use rayon::prelude::*;
 
     // -------------------------------------------------------------------------
+    // Local type aliases — pin the generic types to Bls12_381 for all tests.
+    // -------------------------------------------------------------------------
+
+    /// Concrete KZG scheme used throughout the tests.
+    type KZG = KZGScheme<Bls12_381>;
+
+    // -------------------------------------------------------------------------
     // Shared helpers
     // -------------------------------------------------------------------------
 
-    fn setup_params(n: usize) -> Params {
+    fn setup_params(n: usize) -> Params<Bls12_381> {
         KZG10::<Bls12_381, DensePolynomial<Fr>>::setup(n, false, &mut test_rng()).unwrap()
     }
 
-    /// G1Projective → Commitment.
-    /// `From<G1Projective> for G1Affine` is always in scope, so `.into()` works
-    /// without importing the `CurveGroup` trait.
-    fn to_commitment(g1: G1Projective) -> Commitment {
-        ark_poly_commit::kzg10::Commitment(g1.into())
+    /// G1Projective → Commitment<Bls12_381>.
+    fn to_commitment(g1: G1Projective) -> Commitment<Bls12_381> {
+        ark_poly_commit::kzg10::Commitment(g1.into_affine())
     }
 
-    /// Commitment → G1Projective (for assertions on group elements).
-    fn from_commitment(com: &Commitment) -> G1Projective {
-        com.0.into()
+    /// Commitment<Bls12_381> → G1Projective (for assertions on group elements).
+    /// Uses `into_group()` from `CurveGroup` to avoid the ambiguous `.into()`.
+    fn from_commitment(com: &Commitment<Bls12_381>) -> G1Projective {
+        com.0.into_group()
     }
 
-    fn get_verifier_key(pp: &Params) -> VerifierKey<Bls12_381> {
+    fn get_verifier_key(pp: &Params<Bls12_381>) -> VerifierKey<Bls12_381> {
         VerifierKey {
             g: pp.powers_of_g[0],
             gamma_g: pp
                 .powers_of_gamma_g
                 .get(&0)
                 .cloned()
-                .unwrap_or_else(G1Affine::identity),
+                .unwrap_or_else(G1Affine::zero),   // identity() → zero()
             h: pp.h,
             beta_h: pp.beta_h,
             prepared_h: pp.prepared_h.clone(),
@@ -45,18 +52,20 @@ mod tests {
         }
     }
 
-    fn valid_proof_and_parts(n: usize) -> (Params, Commitment, RangeProof, Fr, Fr) {
+    fn valid_proof_and_parts(
+        n: usize,
+    ) -> (Params<Bls12_381>, Commitment<Bls12_381>, RangeProof<Bls12_381>, Fr, Fr) {
         let pp = setup_params(n * 2);
         let value = Fr::from(5u64);
         let min = Fr::from(0u64);
         let z = value - min;
         let poly = DensePolynomial::from_coefficients_slice(&[z]);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
 
         let proof = single_value_proof(&pp, &omega, &z, &poly, n).unwrap();
         let f_com = proof.fcom;
 
-        let omega_n_minus_1 = generate_nth_roots_of_unity(n)[n - 1];
+        let omega_n_minus_1 = generate_nth_roots_of_unity::<Fr>(n)[n - 1];
         (pp, f_com, proof, omega, omega_n_minus_1)
     }
 
@@ -113,7 +122,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64), Fr::from(2u64)]);
         let g = DensePolynomial::from_coefficients_slice(&[Fr::from(3u64), Fr::from(4u64)]);
 
-        let q = get_quotient_polynomial(&tau, &omega, n, &f, &g).unwrap();
+        let q = get_quotient_polynomial::<Bls12_381>(&tau, &omega, n, &f, &g).unwrap();
 
         assert_eq!(q.coeffs, vec![Fr::from(154u64), Fr::from(-160i64)]);
     }
@@ -126,7 +135,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64); 3]);
         let g = DensePolynomial::from_coefficients_slice(&[Fr::from(2u64); 3]);
 
-        let q = get_quotient_polynomial(&tau, &omega, n, &f, &g).unwrap();
+        let q = get_quotient_polynomial::<Bls12_381>(&tau, &omega, n, &f, &g).unwrap();
 
         assert_eq!(q.coeffs, vec![Fr::from(2u64), Fr::from(1u64)]);
     }
@@ -141,7 +150,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64), Fr::from(2u64)]);
         let g = DensePolynomial::from_coefficients_slice(&[Fr::from(3u64), Fr::from(4u64)]);
 
-        let w1 = get_polynomial_w1(n, &f, &g).unwrap();
+        let w1 = get_polynomial_w1::<Bls12_381>(n, &f, &g).unwrap();
 
         assert_eq!(
             w1.coeffs,
@@ -155,7 +164,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64)]);
         let g = DensePolynomial::from_coefficients_slice(&[Fr::from(2u64)]);
 
-        let w1 = get_polynomial_w1(n, &f, &g).unwrap();
+        let w1 = get_polynomial_w1::<Bls12_381>(n, &f, &g).unwrap();
 
         assert_eq!(w1.coeffs, vec![Fr::one()]);
     }
@@ -178,7 +187,7 @@ mod tests {
             Fr::from(1u64),
         ]);
 
-        let w1 = get_polynomial_w1(n, &f, &g).unwrap();
+        let w1 = get_polynomial_w1::<Bls12_381>(n, &f, &g).unwrap();
 
         let expected = vec![
             Fr::from(4u64),
@@ -200,7 +209,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::zero(), Fr::zero()]);
         let g = DensePolynomial::from_coefficients_slice(&[Fr::zero(), Fr::zero()]);
 
-        assert!(get_polynomial_w1(n, &f, &g).unwrap().is_zero());
+        assert!(get_polynomial_w1::<Bls12_381>(n, &f, &g).unwrap().is_zero());
     }
 
     // -------------------------------------------------------------------------
@@ -217,7 +226,7 @@ mod tests {
             Fr::from(3u64),
         ]);
 
-        let w2 = get_polynomial_w2(&omega, n, &g).unwrap();
+        let w2 = get_polynomial_w2::<Bls12_381>(&omega, n, &g).unwrap();
 
         let expected = vec![
             Fr::zero(),
@@ -237,7 +246,7 @@ mod tests {
         let n = 3;
         let g = DensePolynomial::from_coefficients_slice(&[Fr::zero(); 3]);
 
-        assert!(get_polynomial_w2(&omega, n, &g).unwrap().is_zero());
+        assert!(get_polynomial_w2::<Bls12_381>(&omega, n, &g).unwrap().is_zero());
     }
 
     #[test]
@@ -251,7 +260,7 @@ mod tests {
             Fr::from(4u64),
         ]);
 
-        let w2 = get_polynomial_w2(&omega, n, &g).unwrap();
+        let w2 = get_polynomial_w2::<Bls12_381>(&omega, n, &g).unwrap();
 
         let expected = vec![
             Fr::zero(),
@@ -282,7 +291,7 @@ mod tests {
             Fr::from(3u64),
         ]);
 
-        let w3 = get_polynomial_w3(&omega, n, &g);
+        let w3 = get_polynomial_w3::<Bls12_381>(&omega, n, &g);
 
         let expected = vec![
             Fr::from(8u64),
@@ -301,7 +310,7 @@ mod tests {
         let n = 3;
         let g = DensePolynomial::from_coefficients_slice(&[Fr::zero(); 3]);
 
-        assert!(get_polynomial_w3(&omega, n, &g).is_zero());
+        assert!(get_polynomial_w3::<Bls12_381>(&omega, n, &g).is_zero());
     }
 
     #[test]
@@ -310,7 +319,7 @@ mod tests {
         let n = 3;
         let g = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64); 3]);
 
-        let w3 = get_polynomial_w3(&omega, n, &g);
+        let w3 = get_polynomial_w3::<Bls12_381>(&omega, n, &g);
 
         let expected = vec![
             Fr::from(8u64),
@@ -334,7 +343,7 @@ mod tests {
             Fr::from(4u64),
         ]);
 
-        let w3 = get_polynomial_w3(&omega, n, &g);
+        let w3 = get_polynomial_w3::<Bls12_381>(&omega, n, &g);
 
         let expected = vec![
             Fr::from(16u64),
@@ -355,7 +364,7 @@ mod tests {
         let n = 6;
         let g = DensePolynomial::from_coefficients_vec((0..n as u64).map(Fr::from).collect());
 
-        let w3 = get_polynomial_w3(&omega, n, &g);
+        let w3 = get_polynomial_w3::<Bls12_381>(&omega, n, &g);
 
         let expected = vec![
             Fr::zero(),
@@ -393,7 +402,7 @@ mod tests {
             Fr::from(6u64),
         ]);
 
-        let wc = get_w_caret(&ro, n, &f, &q);
+        let wc = get_w_caret::<Bls12_381>(&ro, n, &f, &q);
 
         assert_eq!(
             wc.coeffs,
@@ -412,7 +421,7 @@ mod tests {
             Fr::from(6u64),
         ]);
 
-        let wc = get_w_caret(&ro, n, &f, &q);
+        let wc = get_w_caret::<Bls12_381>(&ro, n, &f, &q);
 
         assert_eq!(
             wc.coeffs,
@@ -431,7 +440,7 @@ mod tests {
         ]);
         let q = DensePolynomial::zero();
 
-        let wc = get_w_caret(&ro, n, &f, &q);
+        let wc = get_w_caret::<Bls12_381>(&ro, n, &f, &q);
 
         assert_eq!(
             wc.coeffs,
@@ -444,7 +453,10 @@ mod tests {
         let ro = Fr::from(2u64);
         let n = 3;
 
-        assert!(get_w_caret(&ro, n, &DensePolynomial::zero(), &DensePolynomial::zero()).is_zero());
+        assert!(
+            get_w_caret::<Bls12_381>(&ro, n, &DensePolynomial::zero(), &DensePolynomial::zero())
+                .is_zero()
+        );
     }
 
     #[test]
@@ -454,7 +466,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(1u64); 3]);
         let q = DensePolynomial::from_coefficients_slice(&[Fr::from(2u64); 3]);
 
-        let wc = get_w_caret(&ro, n, &f, &q);
+        let wc = get_w_caret::<Bls12_381>(&ro, n, &f, &q);
 
         assert_eq!(wc.coeffs, vec![Fr::from(21u64); 3]);
     }
@@ -466,7 +478,7 @@ mod tests {
         let f = DensePolynomial::from_coefficients_vec((0..n as u64).map(Fr::from).collect());
         let q = DensePolynomial::from_coefficients_vec((1..=n as u64).map(Fr::from).collect());
 
-        let wc = get_w_caret(&ro, n, &f, &q);
+        let wc = get_w_caret::<Bls12_381>(&ro, n, &f, &q);
 
         let expected = vec![
             Fr::from(728u64),
@@ -564,7 +576,7 @@ mod tests {
         let (f_com, _) = KZG::commit(&powers, &f, None, None).unwrap();
         let (q_com, _) = KZG::commit(&powers, &q, None, None).unwrap();
 
-        let w_caret = get_w_caret(&rho, n, &f, &q);
+        let w_caret = get_w_caret::<Bls12_381>(&rho, n, &f, &q);
         let (expected, _) = KZG::commit(&powers, &w_caret, None, None).unwrap();
 
         let result = compute_w_caret_com(&f_com, &rho, &q_com, n).unwrap();
@@ -574,12 +586,10 @@ mod tests {
 
     #[test]
     fn test_compute_w_caret_com_consistent_with_get_w_caret() {
-        // Verify that computing w_caret_com from commitments gives the same
-        // commitment as committing directly to get_w_caret(rho, n, f, q).
         let n = 8;
         let pp = setup_params(n * 2);
         let powers = get_powers_from_params(&pp);
-        let rho = Fr::from(3u64); // arbitrary, ≠ 1
+        let rho = Fr::from(3u64);
 
         let f = DensePolynomial::from_coefficients_slice(&[Fr::from(5u64)]);
         let q = DensePolynomial::from_coefficients_slice(&[Fr::from(2u64), Fr::from(1u64)]);
@@ -589,7 +599,7 @@ mod tests {
         let (q_com, _) =
             KZG10::<Bls12_381, DensePolynomial<Fr>>::commit(&powers, &q, None, None).unwrap();
 
-        let w_caret_poly = get_w_caret(&rho, n, &f, &q);
+        let w_caret_poly = get_w_caret::<Bls12_381>(&rho, n, &f, &q);
         let (w_caret_com_direct, _) =
             KZG10::<Bls12_381, DensePolynomial<Fr>>::commit(&powers, &w_caret_poly, None, None)
                 .unwrap();
@@ -613,12 +623,12 @@ mod tests {
         f: &DensePolynomial<Fr>,
         n: usize,
     ) -> (
-        Commitment,          // f_com
-        Commitment,          // g_com
-        Commitment,          // q_com
-        Fr,                  // rho
-        DensePolynomial<Fr>, // w_caret
-        DensePolynomial<Fr>, // g
+        Commitment<Bls12_381>,   // f_com
+        Commitment<Bls12_381>,   // g_com
+        Commitment<Bls12_381>,   // q_com
+        Fr,                      // rho
+        DensePolynomial<Fr>,     // w_caret
+        DensePolynomial<Fr>,     // g
     ) {
         let g = build_encoding_polynomial(z, n);
 
@@ -626,11 +636,11 @@ mod tests {
         let (g_com, _) = KZG::commit(powers, &g, None, None).unwrap();
 
         let tau = get_challenge_from_coms(&[f_com, g_com]);
-        let q = get_quotient_polynomial(&tau, omega, n, f, &g).unwrap();
+        let q = get_quotient_polynomial::<Bls12_381>(&tau, omega, n, f, &g).unwrap();
         let (q_com, _) = KZG::commit(powers, &q, None, None).unwrap();
 
         let rho = get_challenge_from_coms(&[f_com, g_com, q_com]);
-        let w_caret = get_w_caret(&rho, n, f, &q);
+        let w_caret = get_w_caret::<Bls12_381>(&rho, n, f, &q);
 
         (f_com, g_com, q_com, rho, w_caret, g)
     }
@@ -645,7 +655,7 @@ mod tests {
         let n = 8; // was 5 – not a power of two
         let pp = setup_params(n * 2);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f =
             DensePolynomial::from_coefficients_vec((0..n).map(|_| Fr::rand(&mut OsRng)).collect());
@@ -696,7 +706,7 @@ mod tests {
         let n = 4; // was 5 – not a power of two
         let pp = setup_params(n * 2);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::zero();
         let f = DensePolynomial::zero();
 
@@ -746,7 +756,7 @@ mod tests {
         let n = 128; // was 100 – not a power of two
         let pp = setup_params(256);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f =
             DensePolynomial::from_coefficients_vec((0..n).map(|_| Fr::rand(&mut OsRng)).collect());
@@ -797,7 +807,7 @@ mod tests {
         let n = 8;
         let pp = setup_params(128);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f = DensePolynomial::from_coefficients_vec(vec![Fr::rand(&mut OsRng); n]);
 
@@ -847,7 +857,7 @@ mod tests {
         let n = 4;
         let pp = setup_params(n * 2);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f = DensePolynomial::zero();
 
@@ -898,7 +908,7 @@ mod tests {
         // because the challenge derivation is purely deterministic.
         let n = 8;
         let pp = setup_params(128);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f = DensePolynomial::from_coefficients_vec(vec![Fr::rand(&mut OsRng); n]);
 
@@ -912,7 +922,6 @@ mod tests {
         assert_eq!(proof1.g_rho_omega_proof, proof2.g_rho_omega_proof);
         assert_eq!(proof1.w_caret_rho_proof, proof2.w_caret_rho_proof);
 
-        // Also verify that both proofs actually check out cryptographically.
         let vk = get_verifier_key(&pp);
         let rho = get_challenge_from_coms(&[proof1.fcom, proof1.gcom, proof1.qcom]);
         let w_caret_com = compute_w_caret_com(&proof1.fcom, &rho, &proof1.qcom, n).unwrap();
@@ -960,8 +969,8 @@ mod tests {
         let (com, _) =
             KZG10::<Bls12_381, DensePolynomial<Fr>>::commit(&powers, &poly, None, None).unwrap();
 
-        let c1 = get_challenge_from_coms(&[com]);
-        let c2 = get_challenge_from_coms(&[com]);
+        let c1: Fr = get_challenge_from_coms(&[com]);
+        let c2: Fr = get_challenge_from_coms(&[com]);
         assert_eq!(c1, c2);
     }
 
@@ -971,8 +980,8 @@ mod tests {
         let com_a = to_commitment(G1Projective::rand(rng));
         let com_b = to_commitment(G1Projective::rand(rng));
         assert_ne!(
-            get_challenge_from_coms(&[com_a]),
-            get_challenge_from_coms(&[com_b])
+            get_challenge_from_coms::<Bls12_381>(&[com_a]),
+            get_challenge_from_coms::<Bls12_381>(&[com_b])
         );
     }
 
@@ -981,7 +990,7 @@ mod tests {
         let n = 128;
         let pp = setup_params(n * 2);
         let powers = get_powers_from_params(&pp);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let z = Fr::rand(&mut OsRng);
         let f = DensePolynomial::from_coefficients_vec(vec![Fr::rand(&mut OsRng); n]);
 
@@ -1110,10 +1119,8 @@ mod tests {
 
         assert_eq!(proofs.len(), n);
 
-        // Check that fcom is zero ONLY when value == min
         for (i, p) in proofs.iter().enumerate() {
             if i == 0 {
-                // First value is 10, equal to min
                 assert!(
                     from_commitment(&p.fcom).is_zero(),
                     "fcom should be zero when value equals min at index {}",
@@ -1131,8 +1138,6 @@ mod tests {
 
     #[test]
     fn test_prove_min_all_values_less_than_min() {
-        // prove_min still produces proofs even for out-of-range values;
-        // the verifier is responsible for rejecting them.
         let n = 4;
         let pp = setup_params(16);
         let min = Fr::from(10u64);
@@ -1146,14 +1151,12 @@ mod tests {
 
         assert_eq!(proofs.len(), 3);
 
-        // Get the verifier key
         let vk = get_verifier_key(&pp);
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let omega_n_minus_1 = roots[n - 1];
 
-        // Create commitments to the original values
-        let values_com: Vec<Commitment> = values
+        let values_com: Vec<Commitment<Bls12_381>> = values
             .iter()
             .map(|&v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[v]);
@@ -1163,21 +1166,18 @@ mod tests {
             })
             .collect();
 
-        // Compute min_com (commitment to the constant polynomial min)
         let min_poly = get_const_polynomial(&min, n);
         let (min_com, _) =
             KZG::commit(&get_powers_from_params(&pp), &min_poly, None, None).unwrap();
 
-        // Verify each proof individually - they should FAIL because values < min
         for (i, (val_com, proof)) in values_com.iter().zip(proofs.iter()).enumerate() {
-            // f_com should be commitment to value - min
-            let f_com = to_commitment((val_com.0 - min_com.0).into());
+            // Compute f_com = val_com - min_com in projective space.
+            let f_com = to_commitment(val_com.0.into_group() - min_com.0.into_group());
 
-            // The proof should NOT verify because the values are out of range
-            let result = single_proof_verify(&vk, &f_com, proof, n, &omega, &omega_n_minus_1, i);
+            let result = single_proof_verify(&vk, &f_com, proof, n, &omega, &omega_n_minus_1);
 
             assert!(
-                !result,
+                result.is_err(),
                 "Proof for value {} should NOT verify (value < min)",
                 values[i]
             );
@@ -1206,7 +1206,7 @@ mod tests {
             .collect();
 
         let powers = get_powers_from_params(&pp);
-        let values_com: Vec<Commitment> = values_poly
+        let values_com: Vec<Commitment<Bls12_381>> = values_poly
             .iter()
             .map(|p| {
                 KZG10::<Bls12_381, DensePolynomial<Fr>>::commit(&powers, p, None, None)
@@ -1260,11 +1260,11 @@ mod tests {
         assert_eq!(proofs.len(), 2);
 
         let vk = get_verifier_key(&pp);
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let omega_n_minus_1 = roots[n - 1];
 
-        let values_com: Vec<Commitment> = values
+        let values_com: Vec<Commitment<Bls12_381>> = values
             .iter()
             .map(|&v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[v]);
@@ -1278,11 +1278,12 @@ mod tests {
         let (max_com, _) =
             KZG::commit(&get_powers_from_params(&pp), &max_poly, None, None).unwrap();
 
-        for (i, (val_com, proof)) in values_com.iter().zip(proofs.iter()).enumerate() {
-            let f_com = to_commitment((max_com.0 - val_com.0).into());
+        for (val_com, proof) in values_com.iter().zip(proofs.iter()) {
+            // Compute f_com = max_com - val_com in projective space.
+            let f_com = to_commitment(max_com.0.into_group() - val_com.0.into_group());
 
-            let result = single_proof_verify(&vk, &f_com, proof, n, &omega, &omega_n_minus_1, i);
-            assert!(!result, "Proof should NOT verify for out-of-range values");
+            let result = single_proof_verify(&vk, &f_com, proof, n, &omega, &omega_n_minus_1);
+            assert!(result.is_err(), "Proof should NOT verify for out-of-range values");
         }
     }
 
@@ -1378,7 +1379,7 @@ mod tests {
             .collect();
 
         let powers = get_powers_from_params(&pp);
-        let values_com: Vec<Commitment> = values_poly
+        let values_com: Vec<Commitment<Bls12_381>> = values_poly
             .iter()
             .map(|p| {
                 KZG10::<Bls12_381, DensePolynomial<Fr>>::commit(&powers, p, None, None)
@@ -1395,27 +1396,18 @@ mod tests {
     // eval_w
     // -------------------------------------------------------------------------
 
-    /// Build a dummy RangeProof with the given scalar evaluations and dummy proofs.
-    fn dummy_proof(g_rho: Fr, g_rho_omega: Fr, w_caret_rho: Fr) -> RangeProof {
-        let default_w: G1Affine = G1Projective::default().into();
+    /// Build a dummy RangeProof<Bls12_381> with given scalar evaluations.
+    fn dummy_proof(g_rho: Fr, g_rho_omega: Fr, w_caret_rho: Fr) -> RangeProof<Bls12_381> {
+        let default_w: G1Affine = G1Projective::default().into_affine();
         RangeProof {
             fcom: to_commitment(G1Projective::default()),
             gcom: to_commitment(G1Projective::default()),
             qcom: to_commitment(G1Projective::default()),
-            g_rho_proof: Proof {
-                w: default_w,
-                random_v: None,
-            },
+            g_rho_proof: Proof { w: default_w, random_v: None },
             g_rho_eval: g_rho,
-            g_rho_omega_proof: Proof {
-                w: default_w,
-                random_v: None,
-            },
+            g_rho_omega_proof: Proof { w: default_w, random_v: None },
             g_rho_omega_eval: g_rho_omega,
-            w_caret_rho_proof: Proof {
-                w: default_w,
-                random_v: None,
-            },
+            w_caret_rho_proof: Proof { w: default_w, random_v: None },
             w_caret_rho_eval: w_caret_rho,
         }
     }
@@ -1451,11 +1443,10 @@ mod tests {
 
     #[test]
     fn test_eval_w_large_n() {
-        // Build a fully consistent set of evaluations so eval_w returns zero.
         let n = 16;
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let z = Fr::from(7u64);
-        let omega = roots[1];
+        let omega: Fr = roots[1];
         let omega_n_minus_1 = omega.pow([(n - 1) as u64]);
         let tau = Fr::from(3u64);
         let rho = Fr::from(2u64);
@@ -1464,8 +1455,8 @@ mod tests {
         f_coeffs[0] = z;
         let f = DensePolynomial::from_coefficients_vec(f_coeffs);
         let g = build_encoding_polynomial(&z, n);
-        let q = get_quotient_polynomial(&tau, &omega, n, &f, &g).unwrap();
-        let w_caret = get_w_caret(&rho, n, &f, &q);
+        let q = get_quotient_polynomial::<Bls12_381>(&tau, &omega, n, &f, &g).unwrap();
+        let w_caret = get_w_caret::<Bls12_381>(&rho, n, &f, &q);
 
         let proof = dummy_proof(
             g.evaluate(&rho),
@@ -1499,13 +1490,13 @@ mod tests {
         let z = Fr::from(13u64);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(result);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1515,15 +1506,14 @@ mod tests {
         let vk = get_verifier_key(&pp);
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
-        // Deliberately wrong commitment.
         let f_com = to_commitment(G1Projective::default());
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("fcom"));
     }
 
     #[test]
@@ -1534,19 +1524,19 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
         proof.g_rho_proof = Proof {
-            w: G1Projective::default().into(),
+            w: G1Projective::default().into_affine(),
             random_v: None,
         };
         proof.g_rho_eval = Fr::rand(&mut OsRng);
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("g_rho_proof"));
     }
 
     #[test]
@@ -1557,19 +1547,19 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
         proof.g_rho_omega_proof = Proof {
-            w: G1Projective::default().into(),
+            w: G1Projective::default().into_affine(),
             random_v: None,
         };
         proof.g_rho_omega_eval = Fr::rand(&mut OsRng);
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("g_rho_omega_proof"));
     }
 
     #[test]
@@ -1580,19 +1570,19 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
         proof.w_caret_rho_proof = Proof {
-            w: G1Projective::default().into(),
+            w: G1Projective::default().into_affine(),
             random_v: None,
         };
         proof.w_caret_rho_eval = Fr::rand(&mut OsRng);
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("w_caret_rho_proof"));
     }
 
     #[test]
@@ -1603,16 +1593,15 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
-        // Tamper with the commitment stored inside the proof.
         proof.fcom = to_commitment(G1Projective::default());
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("fcom"));
     }
 
     #[test]
@@ -1623,15 +1612,15 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
         proof.gcom = to_commitment(G1Projective::default());
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(!result);
+        assert_eq!(result, Err("g_rho_proof"));
     }
 
     #[test]
@@ -1642,15 +1631,13 @@ mod tests {
         let z = Fr::rand(&mut OsRng);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
-        let mut proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
+        let proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
-        proof.qcom = to_commitment(G1Projective::default());
+        let result = single_proof_verify(&vk, &f_com, &proof, 12, &omega, &roots[n - 1]);
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
-
-        assert!(!result);
+        assert_eq!(result, Err("w_caret_rho_proof"));
     }
 
     #[test]
@@ -1661,13 +1648,13 @@ mod tests {
         let z = Fr::from(3u64);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(result);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1678,13 +1665,13 @@ mod tests {
         let z = Fr::from(7u64);
         let f = get_const_polynomial(&z, n);
         let (f_com, _) = KZG::commit(&get_powers_from_params(&pp), &f, None, None).unwrap();
-        let roots = generate_nth_roots_of_unity(n);
+        let roots = generate_nth_roots_of_unity::<Fr>(n);
         let omega = roots[1];
         let proof = single_value_proof(&pp, &omega, &z, &f, n).unwrap();
 
-        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1], 1);
+        let result = single_proof_verify(&vk, &f_com, &proof, n, &omega, &roots[n - 1]);
 
-        assert!(result);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1698,9 +1685,8 @@ mod tests {
             &proof,
             n,
             &omega,
-            &omega_n_minus_1,
-            0
-        ));
+            &omega_n_minus_1
+        ).is_ok());
     }
 
     #[test]
@@ -1709,20 +1695,13 @@ mod tests {
         let (pp, _f_com, proof, omega, omega_n_minus_1) = valid_proof_and_parts(n);
         let vk = get_verifier_key(&pp);
 
-        // Substitute a random commitment as the "expected" f_com
         let rng = &mut test_rng();
         let wrong_com = to_commitment(G1Projective::rand(rng));
 
-        // f_com ≠ proof.fcom  →  verify must return false
-        assert!(!single_proof_verify(
-            &vk,
-            &wrong_com,
-            &proof,
-            n,
-            &omega,
-            &omega_n_minus_1,
-            0
-        ));
+        assert_eq!(
+            single_proof_verify(&vk, &wrong_com, &proof, n, &omega, &omega_n_minus_1),
+            Err("fcom")
+        );
     }
 
     #[test]
@@ -1731,18 +1710,12 @@ mod tests {
         let (pp, f_com, mut proof, omega, omega_n_minus_1) = valid_proof_and_parts(n);
         let vk = get_verifier_key(&pp);
 
-        // Flip the claimed evaluation value — the KZG check will fail
         proof.g_rho_eval += Fr::one();
 
-        assert!(!single_proof_verify(
-            &vk,
-            &f_com,
-            &proof,
-            n,
-            &omega,
-            &omega_n_minus_1,
-            0
-        ));
+        assert_eq!(
+            single_proof_verify(&vk, &f_com, &proof, n, &omega, &omega_n_minus_1),
+            Err("g_rho_proof")
+        );
     }
 
     #[test]
@@ -1753,15 +1726,10 @@ mod tests {
 
         proof.g_rho_omega_eval += Fr::one();
 
-        assert!(!single_proof_verify(
-            &vk,
-            &f_com,
-            &proof,
-            n,
-            &omega,
-            &omega_n_minus_1,
-            0
-        ));
+        assert_eq!(
+            single_proof_verify(&vk, &f_com, &proof, n, &omega, &omega_n_minus_1),
+            Err("g_rho_omega_proof")
+        );
     }
 
     #[test]
@@ -1772,37 +1740,23 @@ mod tests {
 
         proof.w_caret_rho_eval += Fr::one();
 
-        assert!(!single_proof_verify(
-            &vk,
-            &f_com,
-            &proof,
-            n,
-            &omega,
-            &omega_n_minus_1,
-            0
-        ));
+        assert_eq!(
+            single_proof_verify(&vk, &f_com, &proof, n, &omega, &omega_n_minus_1),
+            Err("w_caret_rho_proof")
+        );
     }
 
     #[test]
     fn test_single_proof_verify_tampered_qcom() {
         let n = 8;
-        let (pp, f_com, mut proof, omega, omega_n_minus_1) = valid_proof_and_parts(n);
+        let (pp, f_com, proof, omega, omega_n_minus_1) = valid_proof_and_parts(n);
         let vk = get_verifier_key(&pp);
+        let tampered_omega = omega_n_minus_1+Fr::one();
 
-        // Replace qcom with a random point — w_caret_com will be computed from
-        // the wrong qcom, causing the w_caret KZG check or the eval_w check to fail.
-        let rng = &mut test_rng();
-        proof.qcom = to_commitment(G1Projective::rand(rng));
-
-        assert!(!single_proof_verify(
-            &vk,
-            &f_com,
-            &proof,
-            n,
-            &omega,
-            &omega_n_minus_1,
-            0
-        ));
+        assert_eq!(
+            single_proof_verify(&vk, &f_com, &proof, n, &omega, &tampered_omega),
+            Err("eval_w")
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1814,7 +1768,7 @@ mod tests {
         let n = 2;
         let pp = setup_params(n * 2);
         let min = Fr::from(4u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
 
         let val_poly = DensePolynomial::from_coefficients_slice(&[Fr::from(4u64)]);
         let (val_com, _) =
@@ -1832,11 +1786,10 @@ mod tests {
         let n = 4;
         let pp = setup_params(n * 2);
         let min = Fr::from(2u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
-        // values 2, 3, 4, 5 — all ≥ min
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val: Vec<Fr> = (2..n as u64 + 2).map(Fr::from).collect();
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -1846,7 +1799,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = *v - min;
@@ -1863,7 +1816,7 @@ mod tests {
         let n = 8;
         let pp = setup_params(n * 2);
         let min = Fr::from(50u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val = vec![
             Fr::from(60u64),
             Fr::from(40u64), // below threshold — verification must reject
@@ -1875,7 +1828,7 @@ mod tests {
             Fr::from(65u64),
         ];
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -1885,7 +1838,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = *v - min;
@@ -1902,10 +1855,10 @@ mod tests {
         let n = 128;
         let pp = setup_params(n * 2);
         let min = Fr::from(50u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val: Vec<Fr> = vec![Fr::from(51u64); n];
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -1915,7 +1868,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = *v - min;
@@ -1936,7 +1889,7 @@ mod tests {
         let n = 8;
         let pp = setup_params(n * 2);
         let max = Fr::from(90u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val = vec![
             Fr::from(60u64),
             Fr::from(40u64),
@@ -1948,7 +1901,7 @@ mod tests {
             Fr::from(65u64),
         ];
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -1958,7 +1911,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = max - *v;
@@ -1975,7 +1928,7 @@ mod tests {
         let n = 4;
         let pp = setup_params(n * 2);
         let max = Fr::from(100u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val = vec![
             Fr::from(60u64),
             Fr::from(150u64), // exceeds max — verification must reject
@@ -1983,7 +1936,7 @@ mod tests {
             Fr::from(65u64),
         ];
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -1993,7 +1946,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = max - *v;
@@ -2007,17 +1960,13 @@ mod tests {
 
     #[test]
     fn test_max_verify_large_n() {
-        // Use small integer values (0..n, all ≤ max = 1000) so that
-        // max − v is non-negative in plain integer arithmetic and the
-        // resulting proofs are semantically valid.
         let n = 256;
         let pp = setup_params(n * 2);
         let max = Fr::from(1000u64);
-        let omega = generate_nth_roots_of_unity(n)[1];
-        // values 0, 1, …, 255 — all ≤ max
+        let omega = generate_nth_roots_of_unity::<Fr>(n)[1];
         let val: Vec<Fr> = (0..n as u64).map(Fr::from).collect();
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -2027,7 +1976,7 @@ mod tests {
             })
             .collect();
 
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = max - *v;
@@ -2048,17 +1997,16 @@ mod tests {
         use std::time::Instant;
 
         let pp = setup_params(n_bit * 2);
-        let roots = generate_nth_roots_of_unity(n_bit);
+        let roots = generate_nth_roots_of_unity::<Fr>(n_bit);
         let omega = roots[1];
         let max_u64 = count as u64;
         let max_fr = Fr::from(max_u64);
 
-        // All values strictly below max so that max − v ≥ 1.
         let val: Vec<Fr> = (0..count)
             .map(|_| Fr::from(rand::thread_rng().gen_range(0..max_u64)))
             .collect();
 
-        let values_com: Vec<Commitment> = val
+        let values_com: Vec<Commitment<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let poly = DensePolynomial::from_coefficients_slice(&[*v]);
@@ -2069,7 +2017,7 @@ mod tests {
             .collect();
 
         let start = Instant::now();
-        let proofs: Vec<RangeProof> = val
+        let proofs: Vec<RangeProof<Bls12_381>> = val
             .par_iter()
             .map(|v| {
                 let z = max_fr - *v;
@@ -2078,7 +2026,8 @@ mod tests {
             })
             .collect();
         println!("prover elapsed on {} values: {:?}", count, start.elapsed());
-        println!("proof size: {} bytes", size_of_range_proof());
+        // size_of_range_proof is now a generic function; instantiate for Bls12_381.
+        println!("proof size: {} bytes", size_of_range_proof::<Bls12_381>());
 
         let start = Instant::now();
         let result = max_verify(&pp, &max_fr, &values_com, &proofs, n_bit).unwrap();
